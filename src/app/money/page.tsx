@@ -1,10 +1,10 @@
 "use client";
 import { useAuth } from "@/lib/auth-context";
 import LoginView from "@/components/LoginView";
-import Dashboard from "@/components/Dashboard";
+import Money from "@/components/Money";
 
-export default function Page(){
+export default function MoneyPage(){
   const { user, loading } = useAuth();
   if (loading) return null;
-  return user ? <Dashboard /> : <LoginView />;
+  return user ? <Money /> : <LoginView />;
 }
