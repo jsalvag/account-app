@@ -29,7 +29,7 @@ export type Institution = {
   userId: string;
   name: string;
   kind: InstitutionKind;
-  createdAt?: any;
+  createdAt?: Date;
 };
 
 export type Account = {
@@ -39,7 +39,7 @@ export type Account = {
   name: string;
   currency: string;
   balance: number;
-  createdAt?: any;
+  createdAt?: Date;
 };
 
 export type TxTransfer = {
@@ -50,7 +50,7 @@ export type TxTransfer = {
   toAccountId: string;
   amount: number;
   currency: string;
-  createdAt?: any;
+  createdAt?: Date;
 };
 
 export type TxFx = {
@@ -64,7 +64,7 @@ export type TxFx = {
   buyAmount: number;
   buyCurrency: string;
   rate: number;
-  createdAt?: any;
+  createdAt?: Date;
 };
 
 export type Transaction = TxTransfer | TxFx;

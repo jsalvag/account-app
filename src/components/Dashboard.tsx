@@ -7,7 +7,6 @@ export default function Dashboard() {
   const {user} = useAuth();
   const {accounts, institutions, transactions, byCurrency} = useUserCollections(user?.uid);
 
-  // Map rápido para nombres de cuenta
   const accMap = new Map(accounts.map(a => [a.id, `${a.name} [${a.currency}]`]));
 
   return (
@@ -75,26 +74,63 @@ export default function Dashboard() {
           <span className="text-xs opacity-70">últimas 10</span>
         </div>
         <div className="flex flex-col divide-y divide-slate-200 dark:divide-slate-800">
-          {transactions.length === 0 &&
-              <div className="text-sm opacity-60 py-2">Sin transacciones aún</div>}
-          {transactions.map(t => {
-            const date = t.createdAt?.toDate?.() ? t.createdAt.toDate() : undefined;
-            const kind = t.type === "transfer" ? "Transferencia" : (t.type === "fx" ? "Cambio" : t.type);
-            const signOut = t.type === "transfer" || (t as any).sellAmount != null;
-            const amt = (t as any).amount ?? (t as any).buyAmount ?? 0;
-            const curr = (t as any).currency ?? (t as any).buyCurrency ?? "";
-            const desc = t.type === "transfer"
-              ? `${accMap.get((t as any).fromAccountId) || (t as any).fromAccountId} → ${accMap.get((t as any).toAccountId) || (t as any).toAccountId}`
-              : `${(t as any).sellCurrency || ""}→${(t as any).buyCurrency || ""} @${(t as any).rate || ""}`;
-            return (
-              <div key={t.id} className="py-2 flex items-center justify-between">
-                <div className="text-sm"><span className="opacity-60">{kind}</span> · {desc}</div>
-                <div
-                  className={`text-sm tabular-nums ${signOut ? "text-rose-600" : "text-emerald-600"}`}>{money(amt)} {curr}</div>
-                <div className="text-[11px] opacity-60 ml-3">{date?.toLocaleString?.() || ""}</div>
-              </div>
-            );
-          })}
+          <table className="min-w-full text-sm">
+            <thead className="text-left opacity-70 border-b border-slate-200 dark:border-slate-800">
+            <tr>
+              <th className="py-2 pr-4">Tipo / Descripción</th>
+              <th className="py-2 pr-4 text-right">Monto</th>
+              <th className="py-2 pl-4">Fecha</th>
+            </tr>
+            </thead>
+            <tbody>
+            {transactions.length === 0 && (
+              <tr>
+                <td colSpan={3} className="py-3 text-center opacity-60">Sin transacciones aún</td>
+              </tr>
+            )}
+            {transactions.map(t => {
+              const date = t.createdAt?.toDate?.() ? t.createdAt.toDate() : undefined;
+
+              let kind = "Tx";
+              let desc = "";
+              let amount = 0;
+              let currency = "";
+              let isOut = false;
+
+              switch (t.type) {
+                case "transfer":
+                  kind = "Transferencia";
+                  desc = `${accMap.get(t.fromAccountId) ?? t.fromAccountId} → ${accMap.get(t.toAccountId) ?? t.toAccountId}`;
+                  amount = t.amount; currency = t.currency; isOut = true;
+                  break;
+                case "fx":
+                  kind = "Cambio";
+                  desc = `${t.sellCurrency}→${t.buyCurrency} @${t.rate}`;
+                  amount = t.buyAmount; currency = t.buyCurrency; isOut = false;
+                  break;
+                case "income":
+                  kind = "Ingreso";
+                  desc = accMap.get(t.accountId) ?? t.accountId;
+                  amount = t.amount; currency = t.currency; isOut = false;
+                  break;
+              }
+
+              return (
+                <tr key={t.id} className="border-t border-slate-200 dark:border-slate-800">
+                  <td className="py-2 pr-4">
+                    <span className="opacity-60">{kind}</span> · {desc}
+                  </td>
+                  <td className={`py-2 pr-4 text-right tabular-nums ${isOut ? "text-rose-600" : "text-emerald-600"}`}>
+                    {money(amount)} {currency}
+                  </td>
+                  <td className="py-2 pl-4 text-xs opacity-60">
+                    {date?.toLocaleString?.() || ""}
+                  </td>
+                </tr>
+              );
+            })}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

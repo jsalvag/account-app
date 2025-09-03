@@ -1,11 +1,11 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { db } from "./firebase";
+import type { Account, Institution, Transaction } from "./types";
 import {
   collection, onSnapshot, query, where, orderBy, limit,
   addDoc, doc, deleteDoc, updateDoc, runTransaction, serverTimestamp, getDocs
 } from "firebase/firestore";
-import type { Account, Institution, Transaction } from "./types";
 
 export function useUserCollections(userId?: string|null) {
   const [institutions, setInstitutions] = useState<Institution[]>([]);
@@ -101,6 +101,21 @@ export async function fx(userId: string, fromId: string, toId: string, sellAmoun
       userId, type:"fx", fromAccountId: fromId, toAccountId: toId,
       sellAmount, sellCurrency: f.currency, buyAmount, buyCurrency: t.currency,
       rate, createdAt: serverTimestamp()
+    } as any);
+  });
+}
+export async function income(userId: string, accountId: string, amount: number, note?: string) {
+  await runTransaction(db, async (tx) => {
+    const aRef = doc(db, "accounts", accountId);
+    const aSnap = await tx.get(aRef);
+    if (!aSnap.exists()) throw new Error("Cuenta no encontrada");
+    const a = aSnap.data() as Account;
+    if (a.userId !== userId) throw new Error("Acceso denegado");
+    tx.update(aRef, { balance: (a.balance||0) + amount });
+    const txRef = doc(collection(db, "transactions"));
+    tx.set(txRef, {
+      userId, type:"income", accountId, amount, currency: a.currency,
+      note, createdAt: serverTimestamp()
     } as any);
   });
 }
