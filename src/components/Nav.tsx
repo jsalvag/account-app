@@ -11,6 +11,7 @@ export default function Nav(){
         <ul className="flex items-center gap-4 text-sm">
           <li><Link href="/" className="opacity-80 hover:opacity-100">Dashboard</Link></li>
           <li><Link href="/money" className="opacity-80 hover:opacity-100">Money</Link></li>
+          <li><Link href="/spending" className="opacity-80 hover:opacity-100">Spendings</Link></li>
         </ul>
         <button onClick={()=>logout()} className="text-sm rounded-md px-3 py-1.5 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Cerrar sesión</button>
       </div>
