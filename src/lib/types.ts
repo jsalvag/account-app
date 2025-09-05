@@ -1,4 +1,5 @@
 // src/lib/types.ts
+import { Timestamp } from "firebase/firestore";
 
 // === Catálogo de instituciones ===
 export type InstitutionKind =
@@ -33,7 +34,7 @@ export type Institution = {
   userId: string;
   name: string;
   kind: InstitutionKind;
-  createdAt?: Date;
+  createdAt?: Timestamp;
 };
 
 export type Account = {
@@ -43,7 +44,7 @@ export type Account = {
   name: string;
   currency: string;
   balance: number;
-  createdAt?: Date;
+  createdAt?: Timestamp;
 };
 
 // === Transacciones existentes + nuevas ===
@@ -55,7 +56,7 @@ export type TxTransfer = {
   toAccountId: string;
   amount: number;
   currency: string;
-  createdAt?: Date;
+  createdAt?: Timestamp;
 };
 
 export type TxFx = {
@@ -69,7 +70,7 @@ export type TxFx = {
   buyAmount: number;
   buyCurrency: string;
   rate: number;
-  createdAt?: Date;
+  createdAt?: Timestamp;
 };
 
 export type TxIncome = {
@@ -80,7 +81,7 @@ export type TxIncome = {
   amount: number;
   currency: string;
   note?: string;
-  createdAt?: Date;
+  createdAt?: Timestamp;
 };
 
 // (Usada por Spending → pagos de facturas, tarjetas, etc.)
@@ -92,25 +93,25 @@ export type TxExpense = {
   amount: number;       // Monto debitado (positivo)
   currency: string;
   title?: string;       // Ej.: "Alquiler", "Visa setiembre"
-  createdAt?: Date;
+  createdAt?: Timestamp;
 };
 
 export type Transaction = TxTransfer | TxFx | TxIncome | TxExpense;
 
-// === Spending: tipos estrictos con Date ===
+// === Spending
 export type RecurringBill = {
   id: string;
   userId: string;
   title: string;               // Alquiler, Expensas, Internet...
   currency: string;            // ARS, USD, etc.
-  amountType: "fixed" | "estimate" | "variable";
+  amountType: "fixed" | "estimate" | "variable" | "unknown";
   amount?: number;             // para fixed/estimate
   dayOfMonth: number;          // día de vencimiento (1..28/30/31)
   defaultAccountId?: string;   // cuenta sugerida para pagar
   institutionId?: string;      // proveedor (opcional)
   notes?: string;
   active: boolean;
-  createdAt?: Date;
+  createdAt?: Timestamp;
 };
 
 export type BillStatus = "pending" | "partial" | "paid" | "overdue";
@@ -123,18 +124,33 @@ export type BillDue = {
   currency: string;
   amountPlanned: number;      // lo esperado (min/est/ fijo)
   amountPaid: number;         // acumulado
-  dueDate: Date;
+  dueDate: Timestamp;
   status: BillStatus;
   accountId?: string;         // última cuenta con la que se pagó
-  createdAt?: Date;
+  planAccountId?: string;     // cuenta sugerida para pagar ese mes
+  planNote?: string;          // nota de planificación
+  createdAt?: Timestamp;
 };
 
 // Aux
 export const money = (n?: number): string =>
-  n === undefined ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: 8 });
+  n === undefined ? "—" : Number(n).toLocaleString(undefined, {maximumFractionDigits: 8});
 
 export const BILL_KIND_LABELS: Record<RecurringBill["amountType"], string> = {
   fixed: "Fijo",
   estimate: "Estimado",
   variable: "Variable",
+  unknown: "Desconocido",
 };
+
+// === Pago individual (subcolección /bill_dues/{dueId}/payments)
+export interface Payment {
+  id: string;
+  userId: string;
+  dueId: string;        // referencia al bill_due
+  amount: number;
+  accountId: string;
+  date: Timestamp;      // fecha efectiva del pago
+  note?: string;
+  createdAt: Timestamp; // marca de creación del registro de pago
+}
