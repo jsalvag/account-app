@@ -11,10 +11,9 @@ import {dateConverter} from "./converters";
 import type {Account, BillDue, BillStatus, Payment, RecurringBill, TxExpense} from "./types";
 
 // === Colecciones con converter ===
-// Lectura (incluye id)
 const billsColR = () => collection(db, "recurring_bills").withConverter(dateConverter<RecurringBill>());
 const duesColR = () => collection(db, "bill_dues").withConverter(dateConverter<BillDue>());
-// Escritura (sin id)
+
 type NewRecurringBill = Omit<RecurringBill, "id" | "createdAt"> & { createdAt?: Timestamp };
 type NewBillDue = Omit<BillDue, "id" | "createdAt"> & { createdAt?: Timestamp };
 type NewTxExpense = Omit<TxExpense, "id" | "createdAt"> & { createdAt?: Timestamp };
@@ -93,7 +92,7 @@ export const generateMonthDues = async (uid: string, monthKey: string): Promise<
       billId: bill.id,
       title: bill.title,
       currency: bill.currency,
-      amountPlanned: 0,               // Fase 1: sin monto (se edita luego)
+      amountPlanned: 0,
       amountPaid: 0,
       status: "pending",
       dueDate: dueDateTs,
@@ -163,7 +162,7 @@ export const dueDateToMillis = (v: DueDateLike): number => {
     const ms = Date.parse(v);
     if (!Number.isNaN(ms)) return ms;
   }
-  return NaN; // valor seguro si llega algo inesperado
+  return NaN;
 };
 
 export const computeBillDueStatus = (
@@ -211,13 +210,7 @@ export const setDuePlannedAmount = async (uid: string, dueId: string, amountPlan
 
     const curr = snap.data() as BillDue;
     if (curr.userId !== uid) throw new Error("No autorizado");
-
-    const nextStatus = computeBillDueStatus({
-      amountPlanned,
-      amountPaid: curr.amountPaid,
-      dueDate: curr.dueDate,
-    });
-
+    const nextStatus = computeBillDueStatus({ amountPlanned, amountPaid: curr.amountPaid, dueDate: curr.dueDate });
     tx.update(ref, { amountPlanned, status: nextStatus });
   });
 };
@@ -239,145 +232,40 @@ export const setDuePlanAccount = async (uid: string, dueId: string, planAccountI
     if (typeof planAccountId === "string" && planAccountId.length > 0) {
       tx.update(ref, {planAccountId});
     } else {
-      // No enviar campo si lo querés limpiar (cumple las reglas que exigen string si existe)
+      tx.update(ref, { planAccountId: "" });
     }
   });
 };
 
-// 3) Registrar pago parcial/total con actualización de estado
-type BillDueUpdatable = {
-  amountPaid: number;
-  accountId: string;
-  status: BillStatus;
-  planNote?: string;
-};
-
-export const addDuePayment = async (params: {
+// ======= NUEVO: crear ítem puntual (no proviene de plantilla) =======
+export const createOneOffDue = async (params: {
   uid: string;
-  dueId: string;
-  amount: number;
-  accountId: string;
-  note?: string;
-}): Promise<void> => {
-  const {uid, dueId, amount, accountId, note} = params;
-
+  title: string;
+  currency: string;
+  dueDate: Timestamp;
+  amountPlanned: number;
+  planAccountId?: string;
+}): Promise<string> => {
+  const { uid, title, currency, dueDate, amountPlanned, planAccountId } = params;
   if (!uid) throw new Error("uid requerido");
-  if (!dueId) throw new Error("dueId requerido");
-  if (!Number.isFinite(amount) || amount <= 0) throw new Error("amount inválido");
-  if (!accountId) throw new Error("accountId requerido");
+  if (!title.trim()) throw new Error("titulo requerido");
+  if (!currency) throw new Error("currency requerido");
+  if (!(amountPlanned >= 0)) throw new Error("amountPlanned inválido");
 
-  const ref = doc(db, "bill_dues", dueId);
-
-  await runTransaction(db, async (tx) => {
-    const snap = await tx.get(ref);
-    if (!snap.exists()) throw new Error("Instancia no encontrada");
-
-    const curr = snap.data() as BillDue;
-    if (curr.userId !== uid) throw new Error("No autorizado");
-
-    const planned = curr.amountPlanned;
-    const prevPaid = curr.amountPaid;
-
-    const nextPaidRaw = prevPaid + amount;
-    const nextPaid = planned > 0 ? Math.min(nextPaidRaw, planned) : nextPaidRaw;
-
-    const nextStatus = computeBillDueStatus({
-      amountPlanned: planned,
-      amountPaid: nextPaid,
-      dueDate: curr.dueDate,
-    });
-
-    const updateData: BillDueUpdatable = { amountPaid: nextPaid, accountId, status: nextStatus };
-    if (typeof note === "string") updateData.planNote = note;
-
-    tx.update(ref, updateData);
-  });
-};
-
-// ==========================
-// === Subcolección Pagos ===
-// ==========================
-
-// /bill_dues/{dueId}/payments
-const paymentsColR = (dueId: string) =>
-  collection(db, "bill_dues", dueId, "payments").withConverter(dateConverter<Payment>());
-
-export const onPaymentsForDue = (
-  uid: string,
-  dueId: string,
-  onData: (payments: Payment[]) => void,
-  onError: (msg: string) => void
-): (() => void) => {
-  try {
-    const q = query(paymentsColR(dueId), orderBy("date", "asc"));
-    return onSnapshot(q, snap => {
-      const arr: Payment[] = [];
-      snap.forEach(d => {
-        const p = d.data();
-        if (p.userId === uid) arr.push(p);
-      });
-      onData(arr);
-    }, e => onError(e.message));
-  } catch (e: unknown) {
-    onError(e instanceof Error ? e.message : String(e));
-    return () => {};
-  }
-};
-
-// Crear registro de pago + actualizar el due en la misma transacción
-export const createDuePayment = async (params: {
-  uid: string;
-  dueId: string;
-  amount: number;
-  accountId: string;
-  date?: Timestamp;
-  note?: string;
-}): Promise<void> => {
-  const { uid, dueId, amount, accountId, date, note } = params;
-
-  if (!uid) throw new Error("uid requerido");
-  if (!dueId) throw new Error("dueId requerido");
-  if (!accountId) throw new Error("accountId requerido");
-  if (!Number.isFinite(amount) || amount <= 0) throw new Error("amount inválido");
-
-  const dueRef = doc(duesColR(), dueId);
-
-  await runTransaction(db, async (tx) => {
-    const snap = await tx.get(dueRef);
-    if (!snap.exists()) throw new Error("bill_due no encontrado");
-
-    const curr = snap.data() as BillDue;
-    if (curr.userId !== uid) throw new Error("No autorizado");
-
-    const planned = curr.amountPlanned;
-    const prevPaid = curr.amountPaid;
-
-    const nextPaidRaw = prevPaid + amount;
-    const nextPaid = planned > 0 ? Math.min(nextPaidRaw, planned) : nextPaidRaw;
-
-    // status
-    const nowMs = Date.now();
-    const dueMs = curr.dueDate.toMillis();
-    let nextStatus: BillStatus;
-    if (planned > 0 && nextPaid >= planned)      nextStatus = "paid";
-    else if (dueMs < nowMs)                      nextStatus = "overdue";
-    else if (planned > 0 && nextPaid > 0)        nextStatus = "partial";
-    else                                         nextStatus = "pending";
-
-    // 1) Historial de pagos (subcolección)
-    const payRef = doc(paymentsColR(dueId));
-    const payment: Omit<Payment, "id"> = {
+  const docRef = await addDoc(duesColW(), {
       userId: uid,
-      dueId,
-      amount,
-      accountId,
-      date: date ?? Timestamp.now(),
-      note,
-      createdAt: Timestamp.now(),
-    };
-    tx.set(payRef, { ...payment, id: payRef.id });
-
-    // 2) Actualizar acumulado
-    tx.update(dueRef, { amountPaid: nextPaid, accountId, status: nextStatus });
+    title: title.trim(),
+    currency,
+    amountPlanned,
+    amountPaid: 0,
+    status: "pending",
+    dueDate,
+    ...(planAccountId ? { planAccountId } : {}),
   });
+  return docRef.id;
+    };
+
+// ======= NUEVO: borrar ítem del plan =======
+export const deleteDue = async (dueId: string): Promise<void> => {
+  await deleteDoc(doc(db, "bill_dues", dueId));
 };
