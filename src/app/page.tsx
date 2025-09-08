@@ -1,10 +1,8 @@
 "use client";
-import { useAuth } from "@/lib/auth-context";
-import LoginView from "@/components/LoginView";
-import Dashboard from "@/components/Dashboard";
+import {useAuth} from "@/lib/auth-context";
 
-export default function Page(){
-  const { user, loading } = useAuth();
+export default function Page() {
+  const {user, loading} = useAuth();
   if (loading) return null;
-  return user ? <Dashboard /> : <LoginView />;
+  return <h3>Hola `${user?.email}`</h3>;
 }
