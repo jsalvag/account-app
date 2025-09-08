@@ -6,11 +6,11 @@ import {useAuth} from "@/lib/auth-context";
 import {useUserCollections} from "@/lib/useCollections";
 import {
   BILL_KIND_LABELS,
-  BillDue,
-  KIND_LABELS,
   money,
-  RecurringBill,
-  fmtDMYfromTs
+  fmtDMYfromTs,
+  HasToDate,
+  type BillDue,
+  type RecurringBill,
 } from "@/lib/types";
 import {
   createRecurringBill,
@@ -21,9 +21,9 @@ import {
   payDue,
   updateRecurringBill,
   createOneOffDue,
-  deleteDue
+  deleteDue,
 } from "@/lib/spending";
-import {AmountType, Currency} from "@/lib/converters";
+import { AMOUNT_TYPE, AmountType, Currency } from "@/lib/converters";
 import {Timestamp} from "firebase/firestore";
 import {ToastProvider, useToast} from "@/components/ui/ToastProvider";
 import {PendingProvider, usePending} from "@/components/ui/PendingProvider";
@@ -34,7 +34,7 @@ import ConfirmDeleteModal from "./_modals/ConfirmDeleteModal";
 /* ==========
  * Fechas
  * ========== */
-const formatDueDate = (v: { toDate?: () => Date } | Date | null | undefined): string => {
+const formatDueDate = (v: HasToDate | Date | null | undefined): string => {
   if (!v) return "";
   return fmtDMYfromTs(v);
 };
@@ -48,7 +48,7 @@ const monthKey = (d: Date): string => `${d.getUTCFullYear()}-${String(d.getUTCMo
 /* ==========
  * Estilos acciones
  * ========== */
-const ACTIONS_COL_W = "w-[72px]";
+const ACTIONS_COL_W = "w-[84px]";
 const ACTIONS_CELL = `py-2 pl-4 ${ACTIONS_COL_W}`;
 const ACTIONS_HEAD = `py-2 pl-4 text-center ${ACTIONS_COL_W}`;
 const ICON_GROUP = "inline-flex items-center justify-center rounded-md border border-slate-300 dark:border-slate-700 overflow-hidden";
@@ -68,27 +68,50 @@ function Content(): JSX.Element {
 
   // ui
   const [templatesOpen, setTemplatesOpen] = useState<boolean>(false);
-
-  // modales
   const [tplModalOpen, setTplModalOpen] = useState(false);
   const [tplToEdit, setTplToEdit] = useState<RecurringBill | null>(null);
   const [oneOffModalOpen, setOneOffModalOpen] = useState(false);
   const [confirmDel, setConfirmDel] = useState<{
-    id: string,
-    label: string,
-    type: "tpl" | "due"
+    id: string;
+    label: string;
+    type: "tpl" | "due";
   } | null>(null);
 
-  // subs (streaming de datos)
+  // maps
+  const accById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts]);
+  const instNameById = useMemo(
+    () => new Map(institutions.map((i) => [i.id, i.name])),
+    [institutions]
+  );
+  const labelAcc = (id?: string): string => {
+    if (!id) return "";
+    const a = accById.get(id);
+    if (!a) return id;
+    const inst = instNameById.get(a.institutionId);
+    const instPart = inst ? `${inst} › ` : "";
+    return `${instPart}${a.name} [${a.currency}]`;
+  };
+
+  /* ==========
+   * Suscripciones
+   * ========== */
   useEffect(() => {
     if (!uid) return;
-    const unsubBills = onBills(uid, setBills, e => {
+    const unsubBills = onBills(
+      uid,
+      (rows) => setBills(rows),
+      (e) => {
       console.error(e);
-      toast.error(String(e));
-    });
-    const unsubDues = onDuesForMonth(uid, month, setDues, e => {
+      toast.error("Error cargando plantillas");
+      }
+    );
+    const unsubDues = onDuesForMonth(
+      uid,
+      month,
+      (rows) => setDues(rows),
+      (e) => {
       console.error(e);
-      toast.error(String(e));
+      toast.error("Error cargando vencimientos");
     });
     return () => {
       unsubBills();
@@ -96,55 +119,59 @@ function Content(): JSX.Element {
     };
   }, [uid, month, toast]);
 
-  const onGenerate = async (): Promise<void> => {
-    await run(async () => {
-      try {
-        if (!uid) return;
-        const created = await generateMonthDues(uid, month);
-        toast.info(created > 0 ? `Generados ${created} vencimientos.` : "No había nada para generar.");
-      } catch (e) {
-        console.error(e);
-        toast.error(e instanceof Error ? e.message : String(e));
-      }
-    });
+  /* ==========
+   * Handlers — Plantillas
+   * ========== */
+  const openCreateTpl = (): void => {
+    setTplToEdit(null);
+    setTplModalOpen(true);
   };
-
-  const onPay = async (dueId: string, accountId: string, amountStr: string): Promise<void> => {
-    await run(async () => {
-      try {
-        if (!accountId) {
-          toast.error("Selecciona una cuenta para pagar.");
-          return;
-        }
-        const amountNum = Number(amountStr);
-        if (!(amountNum > 0)) {
-          toast.error("Ingresa un monto válido.");
-          return;
-        }
-        await payDue(uid, dueId, accountId, amountNum);
-        toast.success("Pago registrado.");
-      } catch (e) {
-        console.error(e);
-        toast.error(e instanceof Error ? e.message : String(e));
-      }
-    });
+  const openEditTpl = (tpl: RecurringBill): void => {
+    setTplToEdit(tpl);
+    setTplModalOpen(true);
   };
-
-  const onAddTemplate = async (data: {
+  const onSubmitTpl = async (data: {
     title: string;
     currency: Currency;
     amountType: AmountType;
     amount?: number;
     dayOfMonth: number;
+    active: boolean;
     defaultAccountId?: string;
-  }) => {
-    // cerrar modal de inmediato y ejecutar bloqueado
+  }): Promise<void> => {
+    await run(async () => {
+      try {
+        if (!uid) throw new Error("Usuario no autenticado");
+        if (tplToEdit) {
+          await updateRecurringBill(tplToEdit.id, {
+            title: data.title.trim(),
+            currency: data.currency,
+            amountType: data.amountType,
+            amount:
+              data.amountType === AMOUNT_TYPE.fixed || data.amountType === AMOUNT_TYPE.estimate
+                ? Number(data.amount ?? 0)
+                : undefined,
+            dayOfMonth: Math.max(1, Math.min(28, Number(data.dayOfMonth || 1))),
+            active: Boolean(data.active),
+            defaultAccountId: data.defaultAccountId || undefined,
+          });
+          toast.success("Plantilla actualizada");
+        } else {
+          await createRecurringBill(uid, {
+            title: data.title.trim(),
+            currency: data.currency,
+            amountType: data.amountType,
+            amount:
+              data.amountType === AMOUNT_TYPE.fixed || data.amountType === AMOUNT_TYPE.estimate
+                ? Number(data.amount ?? 0)
+                : undefined,
+            dayOfMonth: Math.max(1, Math.min(28, Number(data.dayOfMonth || 1))),
+            active: Boolean(data.active),
+            defaultAccountId: data.defaultAccountId || undefined,
+          });
+          toast.success("Plantilla creada");
+        }
     setTplModalOpen(false);
-    await run(async () => {
-      try {
-        if (!uid || !data.title.trim()) return;
-        await createRecurringBill(uid, {...data, active: true});
-        toast.success("Plantilla creada.");
       } catch (e) {
         console.error(e);
         toast.error(e instanceof Error ? e.message : String(e));
@@ -152,12 +179,33 @@ function Content(): JSX.Element {
     });
   };
 
-  const onEditTemplate = async (id: string, patch: Partial<RecurringBill>) => {
-    setTplToEdit(null);
+  const onDeleteTplAsk = (tpl: RecurringBill): void => {
+    setConfirmDel({ id: tpl.id, label: tpl.title, type: "tpl" });
+  };
+
+  const onDeleteTplConfirm = async (): Promise<void> => {
+    const item = confirmDel;
+    if (!item || item.type !== "tpl") return;
     await run(async () => {
       try {
-        await updateRecurringBill(id, patch);
-        toast.success("Plantilla actualizada.");
+        await deleteRecurringBill(item.id);
+        toast.success("Plantilla eliminada");
+      } catch (e) {
+        console.error(e);
+        toast.error(e instanceof Error ? e.message : String(e));
+      } finally {
+        setConfirmDel(null);
+      }
+    });
+  };
+
+  const onGenerateMonth = async (): Promise<void> => {
+    await run(async () => {
+      try {
+        if (!uid) throw new Error("Usuario no autenticado");
+        const n = await generateMonthDues(uid, month);
+        if (n > 0) toast.success(`Generados ${n} vencimientos`);
+        else toast.info("No había vencimientos por generar");
       } catch (e) {
         console.error(e);
         toast.error(e instanceof Error ? e.message : String(e));
@@ -165,27 +213,32 @@ function Content(): JSX.Element {
     });
   };
 
-  const onAddOneOff = async (data: {
+  /* ==========
+   * Handlers — Vencimientos
+   * ========== */
+  const openCreateOneOff = (): void => setOneOffModalOpen(true);
+
+  const onCreateOneOff = async (data: {
     title: string;
     currency: Currency;
-    dateISO: string;
-    amountPlanned?: number;
+    dueDate: string; // yyyy-mm-dd
+    amountPlanned: number;
     planAccountId?: string;
-  }) => {
-    setOneOffModalOpen(false);
+  }): Promise<void> => {
     await run(async () => {
       try {
-        if (!uid || !data.title.trim() || !data.dateISO) return;
+        if (!uid) throw new Error("Usuario no autenticado");
+        const dueDateTs = dateInputToTimestamp(data.dueDate);
         await createOneOffDue({
           uid,
           title: data.title.trim(),
           currency: data.currency,
-          dueDate: dateInputToTimestamp(data.dateISO),
-          amountPlanned: (Number.isFinite(data.amountPlanned) && (data.amountPlanned ?? 0) >= 0)
-            ? (data.amountPlanned ?? 0) : 0,
-          planAccountId: data.planAccountId,
+          dueDate: dueDateTs,
+          amountPlanned: Number(data.amountPlanned || 0),
+          planAccountId: data.planAccountId || undefined,
         });
-        toast.success("Gasto puntual agregado.");
+        toast.success("Vencimiento creado");
+        setOneOffModalOpen(false);
       } catch (e) {
         console.error(e);
         toast.error(e instanceof Error ? e.message : String(e));
@@ -193,17 +246,49 @@ function Content(): JSX.Element {
     });
   };
 
-  const onDelete = async (id: string, type: "tpl" | "due") => {
-    setConfirmDel(null);
+  const onDeleteDueAsk = (due: BillDue): void => {
+    setConfirmDel({
+      id: due.id,
+      label: `${due.title} · ${formatDueDate(due.dueDate)}`,
+      type: "due",
+    });
+  };
+
+  const onDeleteDueConfirm = async (): Promise<void> => {
+    const item = confirmDel;
+    if (!item || item.type !== "due") return;
     await run(async () => {
       try {
-        if (type === "tpl") {
-          await deleteRecurringBill(id);
-          toast.success("Plantilla eliminada.");
-        } else {
-          await deleteDue(id);
-          toast.success("Ítem eliminado del plan.");
+        await deleteDue(item.id);
+        toast.success("Vencimiento eliminado");
+      } catch (e) {
+        console.error(e);
+        toast.error(e instanceof Error ? e.message : String(e));
+      } finally {
+    setConfirmDel(null);
+      }
+    });
+  };
+
+  const onPay = async (due: BillDue, form: HTMLFormElement): Promise<void> => {
+    await run(async () => {
+      try {
+        if (!uid) throw new Error("Usuario no autenticado");
+        const fd = new FormData(form);
+        const accountId = String(fd.get("accountId") || "");
+        const amountStr = String(fd.get("amount") || "");
+        const amountNum = Number(amountStr);
+        if (!accountId) {
+          toast.error("Selecciona una cuenta");
+          return;
         }
+        if (!(amountNum > 0)) {
+          toast.error("Ingresa un monto válido");
+          return;
+        }
+        await payDue(uid, due.id, accountId, amountNum);
+        toast.success("Pago registrado");
+        form.reset();
       } catch (e) {
         console.error(e);
         toast.error(e instanceof Error ? e.message : String(e));
@@ -211,253 +296,227 @@ function Content(): JSX.Element {
     });
   };
 
-  // labels + optgroups
-  const instLabelMap = useMemo(() => {
-    const m = new Map<string, string>();
-    institutions.forEach(i => {
-      const kind = KIND_LABELS[i.kind] ?? i.kind;
-      m.set(i.id, `${i.name} — ${kind}`);
-    });
-    return m;
-  }, [institutions]);
-
-  const renderAccountOptgroups = (filterCurrency?: string): JSX.Element[] => {
-    const byInst = new Map<string, typeof accounts>();
-    accounts.forEach(a => {
-      if (filterCurrency && a.currency !== filterCurrency) return;
-      const arr = byInst.get(a.institutionId) ?? [];
-      arr.push(a);
-      byInst.set(a.institutionId, arr);
-    });
-    const instsSorted = institutions.filter(i => byInst.has(i.id))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    return instsSorted.map(inst => {
-      const opts = (byInst.get(inst.id) ?? [])
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map(a => (
-          <option key={a.id} value={a.id}>
-            {a.name} [{a.currency}] — {money(a.balance)}
-          </option>
-        ));
-      return <optgroup key={inst.id}
-                       label={instLabelMap.get(inst.id) ?? inst.name}>{opts}</optgroup>;
-    });
-  };
-
-  const renderCols = (classes: string[]) => classes.map((cls, i) => <col key={i} className={cls}/>);
+  // helpers UI
+  const monthInputValue = month;
+  const setMonthFromInput = (value: string): void => setMonth(value);
 
   return (
-    <>
-      {/* Header */}
-      <div
-        className="rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="text-2xl font-semibold">Spending (Gastos)</h2>
-            <p className="text-xs opacity-70 mt-0.5">Organiza plantillas y vencimientos del mes</p>
-          </div>
-          <div className="flex items-end gap-2">
-            <div className="flex flex-col">
-              <label htmlFor="monthInput" className="text-xs opacity-70 mb-1">Mes</label>
+    <div className="grid gap-6">
+      {/* Toolbar y acciones */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <label className="text-sm flex items-center gap-2">
+            <span>Mes</span>
               <input
-                id="monthInput" type="month" value={month} disabled={pending}
-                onChange={e => setMonth(e.target.value)}
+              type="month"
+              value={monthInputValue}
+              onChange={(e) => setMonthFromInput(e.target.value)}
                 className="rounded-md border px-2 py-1 bg-white dark:bg-slate-800"
               />
-            </div>
+          </label>
+
+          <div className="flex items-center gap-2">
             <button
-              onClick={onGenerate} disabled={pending}
-              className="rounded-md px-3 py-2 border border-slate-300 dark:border-slate-700"
-              title="Generar vencimientos del mes" aria-label="Generar vencimientos del mes"
+              type="button"
+              onClick={() => setTemplatesOpen((v) => !v)}
+              className="text-sm rounded-md px-3 py-1.5 border border-slate-300 dark:border-slate-700"
+            >
+              {templatesOpen ? "Ocultar plantillas" : "Ver plantillas"}
+            </button>
+            <button
+              type="button"
+              onClick={openCreateTpl}
+              className="text-sm rounded-md px-3 py-1.5 border border-slate-300 dark:border-slate-700"
+            >
+              Nueva plantilla
+            </button>
+            <button
+              type="button"
+              onClick={onGenerateMonth}
+              disabled={pending}
+              className="text-sm rounded-md px-3 py-1.5 border border-slate-300 dark:border-slate-700"
             >
               Generar mes
+            </button>
+            <button
+              type="button"
+              onClick={openCreateOneOff}
+              className="text-sm rounded-md px-3 py-1.5 border border-slate-300 dark:border-slate-700"
+            >
+              Nuevo vencimiento puntual
             </button>
           </div>
         </div>
       </div>
 
-      {/* Plantillas */}
-      <div
-        className="rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold">Plantillas mensuales</h3>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setTplModalOpen(true)} disabled={pending}
-              className="text-sm rounded-md px-3 py-1.5 border border-slate-300 dark:border-slate-700"
-              title="Nueva plantilla" aria-label="Nueva plantilla"
-            >Nueva
-            </button>
-            <button
-              onClick={() => setTemplatesOpen(o => !o)} disabled={pending}
-              aria-expanded={templatesOpen} aria-controls="templates-section"
-              className="text-sm rounded-md px-3 py-1.5 border border-slate-300 dark:border-slate-700"
-              title={templatesOpen ? "Colapsar" : "Expandir"}
-              aria-label={templatesOpen ? "Colapsar" : "Expandir"}
-            >
-              {templatesOpen ? "Colapsar" : "Expandir"}
-            </button>
-          </div>
-        </div>
-
-        <div id="templates-section" hidden={!templatesOpen}>
+      {/* Plantillas (collapsible) */}
+      {templatesOpen && (
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+          <h3 className="text-lg font-semibold mb-3">Plantillas</h3>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <colgroup>
-                {renderCols(["", "w-[88px]", "w-[120px]", "w-[120px]", "w-[80px]", ACTIONS_COL_W])}
-              </colgroup>
               <thead className="text-left opacity-70">
               <tr>
-                <th className="py-2 pr-4">Nombre</th>
+                  <th className="py-2 pr-4">Título</th>
                 <th className="py-2 pr-4">Moneda</th>
-                <th className="py-2 pr-4">Monto</th>
                 <th className="py-2 pr-4">Tipo</th>
+                  <th className="py-2 pr-4 text-right">Monto</th>
                 <th className="py-2 pr-4">Día</th>
+                  <th className="py-2 pr-4">Predeterminada</th>
                 <th className={ACTIONS_HEAD}>Acciones</th>
               </tr>
               </thead>
               <tbody>
-              {bills.map(b => (
+                {bills.map((b) => {
+                  const amount =
+                    b.amountType === AMOUNT_TYPE.fixed || b.amountType === AMOUNT_TYPE.estimate
+                      ? b.amount ?? 0
+                      : undefined;
+                  return (
                 <tr key={b.id} className="border-t border-slate-200 dark:border-slate-800">
                   <td className="py-2 pr-4">{b.title}</td>
                   <td className="py-2 pr-4">{b.currency}</td>
-                  <td className="py-2 pr-4">{money(b.amount)}</td>
-                  <td className="py-2 pr-4">{BILL_KIND_LABELS[b.amountType]}</td>
+                      <td className="py-2 pr-4">
+                        {
+                          BILL_KIND_LABELS[
+                            b.amountType === AMOUNT_TYPE.fixed
+                            ? "fixed"
+                              : b.amountType === AMOUNT_TYPE.estimate
+                            ? "estimate"
+                            : "variable"
+                        ]}
+                      </td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        {amount !== undefined ? money(amount) : "—"}
+                      </td>
                   <td className="py-2 pr-4">{b.dayOfMonth}</td>
+                      <td className="py-2 pr-4">{b.defaultAccountId ? labelAcc(b.defaultAccountId) : "—"}</td>
                   <td className={ACTIONS_CELL}>
-                    <div className={`${ICON_GROUP} mx-auto`}>
+                        <div className={ICON_GROUP}>
                       <button
-                        onClick={() => setTplToEdit(b)} disabled={pending}
-                        className={ICON_BTN} title="Editar plantilla" aria-label="Editar plantilla"
+                            type="button"
+                            className={ICON_BTN}
+                            onClick={() => openEditTpl(b)}
+                            title="Editar"
+                            aria-label="Editar"
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4"
-                             viewBox="0 0 24 24" fill="currentColor">
-                          <path
-                            d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.34a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.82z"/>
-                        </svg>
+                            ✏️
                       </button>
                       <button
-                        onClick={() => setConfirmDel({id: b.id, label: b.title, type: "tpl"})}
-                        disabled={pending}
-                        className={ICON_BTN} title="Borrar plantilla" aria-label="Borrar plantilla"
+                            type="button"
+                            className={ICON_BTN}
+                            onClick={() => onDeleteTplAsk(b)}
+                            title="Eliminar"
+                            aria-label="Eliminar"
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4"
-                             viewBox="0 0 24 24" fill="currentColor">
-                          <path
-                            d="M9 3v1H4v2h16V4h-5V3H9zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v9H7V9z"/>
-                        </svg>
+                            🗑️
                       </button>
                     </div>
                   </td>
                 </tr>
-              ))}
+                  );
+                })}
               {bills.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="py-3 text-center opacity-60">Sin plantillas aún</td>
+                    <td colSpan={7} className="py-3 text-center opacity-60">
+                      No hay plantillas
+                    </td>
                 </tr>
               )}
               </tbody>
             </table>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Planner mensual */}
-      <div
-        className="rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <h3 className="text-lg font-semibold">Planner mensual</h3>
-            <span className="text-xs opacity-70">vencimientos del mes</span>
+      {/* Vencimientos del mes */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-lg font-semibold">Vencimientos del mes</h3>
+          <div className="text-sm opacity-70">{dues.length} items</div>
           </div>
-        </div>
-
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <colgroup>
-              {renderCols([
-                "w-[24%]", "w-[10%]", "w-[12%]", "w-[12%]", "w-[12%]",
-                "w-[20%]", "w-[12%]", ACTIONS_COL_W
-              ])}
-            </colgroup>
             <thead className="text-left opacity-70">
             <tr>
               <th className="py-2 pr-4">Gasto</th>
               <th className="py-2 pr-4">Vence</th>
+                <th className="py-2 pr-4">Estado</th>
               <th className="py-2 pr-4 text-right">Plan</th>
               <th className="py-2 pr-4 text-right">Pagado</th>
-              <th className="py-2 pr-4 text-right">Restante</th>
-              <th className="py-2 pr-4">Cuenta</th>
-              <th className="py-2 pr-4 text-right">Monto</th>
+                <th className="py-2 pr-4">Cuenta plan</th>
+                <th className="py-2 pr-4">Pagar</th>
               <th className={ACTIONS_HEAD}>Acciones</th>
             </tr>
             </thead>
             <tbody>
-            {dues.map(d => {
-              const planned = d.amountPlanned || 0;
+              {dues.map((d) => {
+                const plan = d.amountPlanned || 0;
               const paid = d.amountPaid || 0;
-              const remaining = Math.max(0, planned - paid);
-              const amountInputId = `amt-${d.id}`;
+                const rem = Math.max(0, plan - paid);
+                const colorStatus =
+                  d.status === "paid" ? "text-emerald-600" : d.status === "partial" ? "text-amber-600" : "";
+
               return (
-                <tr key={d.id}
-                    className="border-t border-slate-200 dark:border-slate-800 align-middle">
+                  <tr key={d.id} className="border-t border-slate-200 dark:border-slate-800">
                   <td className="py-2 pr-4">
-                    <div className="truncate">{d.title}</div>
-                    <div className="text-xs opacity-60">[{d.currency}]</div>
+                      {d.title} <span className="opacity-60">[{d.currency}]</span>
                   </td>
-                  <td className="py-2 pr-4 whitespace-nowrap">{formatDueDate(d.dueDate)}</td>
-                  <td className="py-2 pr-4 text-right tabular-nums">{money(planned)}</td>
+                    <td className="py-2 pr-4">{formatDueDate(d.dueDate)}</td>
+                    <td className={`py-2 pr-4 ${colorStatus}`}>{d.status}</td>
+                    <td className="py-2 pr-4 text-right tabular-nums">{money(plan)}</td>
                   <td className="py-2 pr-4 text-right tabular-nums">{money(paid)}</td>
-                  <td className="py-2 pr-4 text-right">
-                    <span
-                      className="inline-block rounded px-2 py-0.5 border tabular-nums">{money(remaining)}</span>
-                  </td>
+                    <td className="py-2 pr-4">{d.planAccountId ? labelAcc(d.planAccountId) : "—"}</td>
                   <td className="py-2 pr-4">
+                      <form
+                        className="flex items-center gap-2"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          void onPay(d, e.currentTarget);
+                        }}
+                      >
                     <select
-                      defaultValue={d.accountId ?? ""} disabled={pending}
-                      className="w-full max-w-[320px] min-w-[220px] rounded-md border px-2 py-1 bg-white dark:bg-slate-800"
+                          name="accountId"
+                          defaultValue={d.planAccountId ?? ""}
+                          className="rounded-md border px-2 py-1 bg-white dark:bg-slate-800"
                     >
-                      <option value="">Cuenta…</option>
-                      {renderAccountOptgroups(d.currency)}
+                          <option value="" disabled>
+                            Cuenta
+                          </option>
+                          {accounts
+                            .filter((a) => a.currency === d.currency)
+                            .map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {labelAcc(a.id)}
+                              </option>
+                            ))}
                     </select>
-                  </td>
-                  <td className="py-2 pr-4 text-right">
                     <input
-                      id={amountInputId} type="number" step="0.01" min={0} placeholder="0,00"
+                          name="amount"
+                          type="number"
+                          step="0.00000001"
+                          placeholder={rem > 0 ? String(rem) : "0"}
+                          className="w-28 rounded-md border px-2 py-1 bg-white dark:bg-slate-800 text-right"
+                        />
+                        <button
+                          type="submit"
                       disabled={pending}
-                      className="w-24 text-right tabular-nums rounded-md border px-2 py-1 bg-white dark:bg-slate-800"
-                    />
+                          className="text-sm rounded-md px-3 py-1.5 border border-slate-300 dark:border-slate-700"
+                        >
+                          Pagar
+                        </button>
+                      </form>
                   </td>
                   <td className={ACTIONS_CELL}>
-                    <div className={`${ICON_GROUP} mx-auto`}>
+                      <div className={ICON_GROUP}>
                       <button
-                        onClick={() => {
-                          const row = document.getElementById(amountInputId)?.closest("tr");
-                          const sel = row?.querySelector("select") as HTMLSelectElement | null;
-                          const inp = document.getElementById(amountInputId) as HTMLInputElement | null;
-                          const acc = sel?.value ?? d.accountId ?? "";
-                          const amt = inp?.value ?? "";
-                          void onPay(d.id, acc, amt);
-                        }}
-                        className={ICON_BTN} title="Registrar pago" aria-label="Registrar pago"
-                        disabled={pending}
+                          type="button"
+                          className={ICON_BTN}
+                          onClick={() => onDeleteDueAsk(d)}
+                          title="Eliminar"
+                          aria-label="Eliminar"
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4"
-                             viewBox="0 0 24 24" fill="currentColor">
-                          <path
-                            d="M3 5h18a2 2 0 0 1 2 2v2H1V7a2 2 0 0 1 2-2zm-2 6h22v6a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-6zm4 4h6v2H5v-2z"/>
-                        </svg>
-                      </button>
-                      <button
-                        onClick={() => setConfirmDel({id: d.id, label: d.title, type: "due"})}
-                        className={ICON_BTN} title="Borrar ítem del plan"
-                        aria-label="Borrar ítem del plan" disabled={pending}
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4"
-                             viewBox="0 0 24 24" fill="currentColor">
-                          <path
-                            d="M9 3v1H4v2h16V4h-5V3H9zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v9H7V9z"/>
-                        </svg>
+                          🗑️
                       </button>
                     </div>
                   </td>
@@ -466,8 +525,8 @@ function Content(): JSX.Element {
             })}
             {dues.length === 0 && (
               <tr>
-                <td colSpan={8} className="py-3 text-center opacity-60">Sin vencimientos para el
-                  mes
+                  <td colSpan={8} className="py-3 text-center opacity-60">
+                    No hay vencimientos para este mes
                 </td>
               </tr>
             )}
@@ -477,48 +536,43 @@ function Content(): JSX.Element {
       </div>
 
       {/* Modales */}
+      {tplModalOpen && (
       <TemplateModal
         open={tplModalOpen}
         onClose={() => setTplModalOpen(false)}
-        onSubmit={onAddTemplate}
-        renderAccountOptgroups={renderAccountOptgroups}
-      />
-      <TemplateModal
-        open={!!tplToEdit}
-        onClose={() => setTplToEdit(null)}
-        onSubmit={async (data) => {
-          if (tplToEdit) await onEditTemplate(tplToEdit.id!, data as Partial<RecurringBill>);
-        }}
-        renderAccountOptgroups={renderAccountOptgroups}
+          onSubmit={onSubmitTpl}
         initial={tplToEdit ?? undefined}
-        submitLabel="Actualizar"
+          accounts={accounts}
       />
+      )}
+
+      {oneOffModalOpen && (
       <OneOffDueModal
         open={oneOffModalOpen}
         onClose={() => setOneOffModalOpen(false)}
-        onSubmit={onAddOneOff}
-        renderAccountOptgroups={renderAccountOptgroups}
+          onSubmit={onCreateOneOff}
+          accounts={accounts}
       />
+      )}
+
+      {confirmDel && (
       <ConfirmDeleteModal
         open={!!confirmDel}
-        onClose={() => setConfirmDel(null)}
-        title={`Confirmar eliminación`}
-        message={confirmDel ? `¿Eliminar "${confirmDel.label}"?` : undefined}
-        onConfirm={async () => {
-          if (confirmDel) await onDelete(confirmDel.id, confirmDel.type);
-        }}
+          title="Confirmar eliminación"
+          description={confirmDel.label}
+          onCancel={() => setConfirmDel(null)}
+          onConfirm={confirmDel.type === "tpl" ? onDeleteTplConfirm : onDeleteDueConfirm}
       />
-    </>
+      )}
+    </div>
   );
 }
 
-export default function SpendingPage(): JSX.Element {
+export default function Page(): JSX.Element {
   return (
     <ToastProvider>
       <PendingProvider>
-        <div className="grid gap-6">
           <Content/>
-        </div>
       </PendingProvider>
     </ToastProvider>
   );

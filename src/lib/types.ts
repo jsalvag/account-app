@@ -175,7 +175,9 @@ export function money(n?: number | null): string {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
-type HasToDate = { toDate: () => Date };
+/** Exportamos el tipo para usarlo en los componentes */
+export type HasToDate = { toDate: () => Date };
+
 function isHasToDate(v: unknown): v is HasToDate {
   return typeof v === "object" && v !== null && "toDate" in v && typeof (v as HasToDate).toDate === "function";
 }

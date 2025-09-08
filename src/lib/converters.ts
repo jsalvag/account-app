@@ -1,60 +1,63 @@
 // src/lib/converters.ts
 import {
-  FieldValue,
-  Timestamp,
-  WithFieldValue,
-  DocumentData,
-  QueryDocumentSnapshot,
-  SnapshotOptions,
+  type DocumentData,
+  type FirestoreDataConverter,
+  type QueryDocumentSnapshot,
+  type SnapshotOptions,
 } from "firebase/firestore";
 
-type DateLikeKeys = "createdAt" | "dueDate" | "postedAt" | "closingAt" | "dueAt";
+/**
+ * Conversor genérico para colecciones de Firestore.
+ * - En `fromFirestore` agrega `id` del documento al objeto resultante.
+ * - En `toFirestore` elimina `id` si estuviera presente.
+ */
+export function dateConverter<T>(): FirestoreDataConverter<T> {
+  return {
+    toFirestore(modelObject: T): DocumentData {
+      const base: Record<string, unknown> = {
+        ...(modelObject as unknown as Record<string, unknown>),
+      };
+      if ("id" in base) {
+        const { id: _omit, ...rest } = base;
+        return rest;
+      }
+      return base;
+    },
+    fromFirestore(snapshot: QueryDocumentSnapshot, options: SnapshotOptions): T {
+      const data = snapshot.data(options) as Record<string, unknown>;
+      const out: Record<string, unknown> = { id: snapshot.id, ...data };
+      return out as T;
+    },
+  };
+}
 
-const asDate = (v: unknown): Date | undefined => {
-  if (!v) return undefined;
-  if (v instanceof Date) return v;
-  if (v instanceof Timestamp) return v.toDate();
-  return undefined;
-};
+/* ============================================================
+ * Catálogos y tipos usados por la UI
+ * ============================================================ */
 
-const toTS = (v: Date | FieldValue | undefined): Date | FieldValue | Timestamp | undefined => {
-  if (!v) return undefined;
-  if (v instanceof Date) return Timestamp.fromDate(v);
-  return v; // respeta serverTimestamp()
-};
+/** Constantes de valor para usar en comparaciones en runtime. */
+export const AMOUNT_TYPE = {
+  fixed: "fixed",
+  estimate: "estimate",
+  variable: "variable",
+} as const;
 
-export const dateConverter = <T extends object>() => ({
-  toFirestore: (data: WithFieldValue<T>): DocumentData => {
-    const out: Record<string, unknown> = {};
-
-    // Copia solo claves definidas
-    Object.keys(data as Record<string, unknown>).forEach((k) => {
-      const v = (data as Record<string, unknown>)[k];
-      if (v !== undefined) out[k] = v;
-    });
-
-    // Normaliza campos de fecha
-    (["createdAt", "dueDate", "postedAt", "closingAt", "dueAt"] as DateLikeKeys[]).forEach((k) => {
-      if (k in out) out[k] = toTS(out[k] as Date | FieldValue | undefined);
-    });
-
-    return out;
-  },
-  fromFirestore: (snap: QueryDocumentSnapshot, _opts: SnapshotOptions): T => {
-    const raw = snap.data() as Record<string, unknown>;
-    const out: Record<string, unknown> = {id: snap.id, ...raw};
-
-    (["createdAt", "dueDate", "postedAt", "closingAt", "dueAt"] as DateLikeKeys[]).forEach((k) => {
-      out[k] = asDate(raw[k]);
-    });
-    return out as T;
-  },
-});
-export const currencies = ["ARS", "USD", "EUR", "BTC", "ETH", "USDT"] as const;
-export type Currency = (typeof currencies)[number];
+/** Array utilitario (por si hay selects, etc.) */
 export const amountTypes = [
-  {value: "fixed", label: "Fijo"},
-  {value: "estimate", label: "Estimado"},
-  {value: "variable", label: "Variable"},
+  AMOUNT_TYPE.fixed,
+  AMOUNT_TYPE.estimate,
+  AMOUNT_TYPE.variable,
 ] as const;
-export type AmountType = (typeof amountTypes)[number]["value"];
+
+/** Tipo de AmountType (sólo en tiempo de compilación). */
+export type AmountType = typeof amountTypes[number];
+
+/**
+ * Lista de monedas sugeridas para la UI.
+ * No limita el dominio: `Currency` es string para compatibilidad
+ * con códigos existentes (fiat y cripto).
+ */
+export const currencyList = ["ARS", "USD", "BTC", "ETH", "USDT", "USDC"] as const;
+
+/** Tipo de moneda amplio (compatibilidad con datos existentes). */
+export type Currency = string;

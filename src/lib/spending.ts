@@ -1,259 +1,218 @@
-// src/lib/spending.ts (sólo este archivo)
-
+// src/lib/spending.ts
 "use client";
 
-import {db} from "./firebase";
 import {
-  addDoc, collection, doc, getDocs, limit, onSnapshot, orderBy,
-  query, runTransaction, where, updateDoc, deleteDoc, Timestamp,
+  Timestamp,
+  runTransaction,
+  collection,
+  doc,
+  onSnapshot,
+  query,
+  where,
+  orderBy,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  getDocs,
+  type Unsubscribe,
+  type QueryConstraint,
 } from "firebase/firestore";
-import {dateConverter} from "./converters";
-import type {Account, BillDue, BillStatus, Payment, RecurringBill, TxExpense} from "./types";
+import { db } from "@/lib/firebase";
+import { dateConverter } from "@/lib/converters";
+import type { Account, BillDue, RecurringBill, Transaction } from "@/lib/types";
 
-// === Colecciones con converter ===
-const billsColR = () => collection(db, "recurring_bills").withConverter(dateConverter<RecurringBill>());
-const duesColR = () => collection(db, "bill_dues").withConverter(dateConverter<BillDue>());
+/* ===========================================================
+ *  Colecciones tipadas (READ vs WRITE)
+ *  - READ   => tipo con `id` requerido (para leer/consultar/actualizar/borrar)
+ *  - WRITE  => tipo sin `id` (para crear documentos con addDoc/setDoc)
+ * =========================================================== */
+function accountsColREAD() {
+  return collection(db, "accounts").withConverter(dateConverter<Account>());
+}
 
-type NewRecurringBill = Omit<RecurringBill, "id" | "createdAt"> & { createdAt?: Timestamp };
-type NewBillDue = Omit<BillDue, "id" | "createdAt"> & { createdAt?: Timestamp };
-type NewTxExpense = Omit<TxExpense, "id" | "createdAt"> & { createdAt?: Timestamp };
+function duesColREAD() {
+  return collection(db, "bill_dues").withConverter(dateConverter<BillDue>());
+}
+function duesColWRITE() {
+  return collection(db, "bill_dues").withConverter(dateConverter<Omit<BillDue, "id">>());
+}
 
-const billsColW = () => collection(db, "recurring_bills").withConverter(dateConverter<NewRecurringBill>());
+function recurringColREAD() {
+  return collection(db, "recurring_bills").withConverter(dateConverter<RecurringBill>());
+}
+function recurringColWRITE() {
+  return collection(db, "recurring_bills").withConverter(dateConverter<Omit<RecurringBill, "id">>());
+}
 
-const duesColW = () => collection(db, "bill_dues").withConverter(dateConverter<NewBillDue>());
+function transactionsColREAD() {
+  return collection(db, "transactions").withConverter(dateConverter<Transaction>());
+}
+function transactionsColWRITE() {
+  return collection(db, "transactions").withConverter(dateConverter<Omit<Transaction, "id">>());
+}
 
-const txColW = () => collection(db, "transactions").withConverter(dateConverter<NewTxExpense>());
-
-export const createRecurringBill = (userId: string, bill: Omit<RecurringBill, "id" | "userId" | "createdAt">) =>
-  addDoc(billsColW(), { userId, ...bill, createdAt: Timestamp.now() });
-
-export const updateRecurringBill = (id: string, patch: Partial<RecurringBill>) =>
-  updateDoc(doc(db, "recurring_bills", id), dateConverter<Partial<RecurringBill>>().toFirestore(patch));
-
-export const onBills = (userId: string, set: (rows: RecurringBill[]) => void, onErr: (m: string) => void) => {
-  const q = query(billsColR(), where("userId", "==", userId), orderBy("createdAt", "desc"), limit(100));
-  return onSnapshot(q, s => set(s.docs.map(d => d.data())), e => onErr(e.message));
-};
-
-export const deleteRecurringBill = (id: string) =>
-  deleteDoc(doc(db, "recurring_bills", id));
-
-export const onDuesForMonth = (userId: string, month: string, set: (rows: BillDue[]) => void, onErr: (m: string) => void) => {
-  const [y, m] = month.split("-").map(Number);
-  const start = Timestamp.fromDate(new Date(Date.UTC(y, m - 1, 1, 0, 0, 0)));
-  const end = Timestamp.fromDate(new Date(Date.UTC(y, m, 1, 0, 0, 0)));
-  const q = query(duesColR(), where("userId", "==", userId), where("dueDate", ">=", start), where("dueDate", "<", end), orderBy("dueDate", "asc"), limit(500));
-  return onSnapshot(q, s => set(s.docs.map(d => d.data())), e => onErr(e.message));
-};
-
-// === Helper: monthKey (YYYY-MM) + dayOfMonth -> Timestamp UTC del día ===
-export const monthKeyToDueTimestamp = (monthKey: string, dayOfMonth: number): Timestamp => {
-  const [yStr, mStr] = monthKey.split("-");
-  const year = Number(yStr);
-  const month = Number(mStr); // 1..12
-  const day = Math.max(1, Math.min(28, Number(dayOfMonth) || 1));
-  const d = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-  return Timestamp.fromDate(d);
-};
-
-// === FASE 1: generar bill_dues desde plantillas ===
-export const generateMonthDues = async (uid: string, monthKey: string): Promise<number> => {
-  if (!uid) return 0;
-
-  const billsSnap = await getDocs(
-    query(
-      billsColR(),
-      where("userId", "==", uid),
-      where("active", "==", true)
-    )
+/* ===========================================================
+ *  onBills: suscripción a plantillas (recurring bills) del usuario
+ * =========================================================== */
+export function onBills(
+  userId: string,
+  onNext: (bills: RecurringBill[]) => void,
+  onError?: (err: unknown) => void,
+): Unsubscribe {
+  const qc: QueryConstraint[] = [
+    where("userId", "==", userId),
+    orderBy("dayOfMonth", "asc"),
+  ];
+  return onSnapshot(
+    query(recurringColREAD(), ...qc),
+    (snap) => {
+      const list: RecurringBill[] = [];
+      snap.forEach((d) => list.push(d.data()));
+      onNext(list);
+    },
+    (err) => onError?.(err),
   );
+}
 
+/* ===========================================================
+ *  Crear / actualizar / borrar plantilla
+ * =========================================================== */
+export async function createRecurringBill(
+  userId: string,
+  bill: Omit<RecurringBill, "id" | "userId" | "createdAt">,
+): Promise<string> {
+  const payload: Omit<RecurringBill, "id"> = {
+    ...bill,
+    userId,
+    createdAt: Timestamp.now(),
+  };
+  const ref = await addDoc(recurringColWRITE(), payload);
+  return ref.id;
+}
+
+export async function updateRecurringBill(
+  billId: string,
+  patch: Partial<Omit<RecurringBill, "id" | "userId" | "createdAt">>,
+): Promise<void> {
+  await updateDoc(doc(recurringColREAD(), billId), patch);
+}
+
+export async function deleteRecurringBill(billId: string): Promise<void> {
+  await deleteDoc(doc(recurringColREAD(), billId));
+}
+
+/* ===========================================================
+ *  onDuesForMonth: suscribe los vencimientos de un mes (YYYY-MM)
+ * =========================================================== */
+export function onDuesForMonth(
+  userId: string,
+  month: string, // "YYYY-MM"
+  onNext: (dues: BillDue[]) => void,
+  onError?: (err: unknown) => void,
+): Unsubscribe {
+  const [y, m] = month.split("-").map(Number);
+  const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(y, m, 1, 0, 0, 0, 0));
+
+  const qc: QueryConstraint[] = [
+    where("userId", "==", userId),
+    where("dueDate", ">=", Timestamp.fromDate(start)),
+    where("dueDate", "<", Timestamp.fromDate(end)),
+    orderBy("dueDate", "asc"),
+  ];
+
+  return onSnapshot(
+    query(duesColREAD(), ...qc),
+    (snap) => {
+      const list: BillDue[] = [];
+      snap.forEach((d) => list.push(d.data()));
+      onNext(list);
+    },
+    (err) => onError?.(err),
+  );
+}
+
+/* ===========================================================
+ *  generateMonthDues: crea vencimientos del mes desde plantillas
+ *  (sin duplicar por bill/mes)
+ * =========================================================== */
+export async function generateMonthDues(
+  userId: string,
+  month: string, // "YYYY-MM"
+): Promise<number> {
+  const [y, m] = month.split("-").map(Number);
+  const monthStart = new Date(Date.UTC(y, m - 1, 1));
+  const monthEnd = new Date(Date.UTC(y, m, 1));
+
+  // plantillas activas
+  const billsSnap = await getDocs(
+    query(recurringColREAD(), where("userId", "==", userId), where("active", "==", true)),
+  );
   let created = 0;
 
   for (const billDoc of billsSnap.docs) {
-    const bill = billDoc.data() as RecurringBill;
+    const bill = billDoc.data();
+    const day = Math.min(Math.max(bill.dayOfMonth, 1), 28);
+    const dueDate = new Date(Date.UTC(y, m - 1, day, 0, 0, 0, 0));
+    const dueTs = Timestamp.fromDate(dueDate);
 
-    const dueDateTs: Timestamp = monthKeyToDueTimestamp(monthKey, bill.dayOfMonth);
-
-    // Evitar duplicado: mismo userId + billId + dueDate
-    const existingSnap = await getDocs(
+    // ¿ya existe un due de esta plantilla en el mes?
+    const existing = await getDocs(
       query(
-        duesColR(),
-        where("userId", "==", uid),
-        where("billId", "==", bill.id),
-        where("dueDate", "==", dueDateTs),
-        limit(1)
-      )
+        duesColREAD(),
+        where("userId", "==", userId),
+        where("billId", "==", billDoc.id),
+        where("dueDate", ">=", Timestamp.fromDate(monthStart)),
+        where("dueDate", "<", Timestamp.fromDate(monthEnd)),
+      ),
     );
-    if (!existingSnap.empty) continue;
+    if (!existing.empty) continue;
 
-    const dueToCreate: Omit<BillDue, "id"> = {
-      userId: uid,
-      billId: bill.id,
+    const amountPlanned =
+      bill.amountType === "fixed" || bill.amountType === "estimate"
+        ? bill.amount ?? 0
+        : 0;
+
+    const due: Omit<BillDue, "id"> = {
+      userId,
+      billId: billDoc.id,
       title: bill.title,
       currency: bill.currency,
-      amountPlanned: 0,
+      amountPlanned,
       amountPaid: 0,
       status: "pending",
-      dueDate: dueDateTs,
-      ...(bill.defaultAccountId ? { planAccountId: bill.defaultAccountId } : {}),
+      dueDate: dueTs,
+      planAccountId: bill.defaultAccountId,
+      accountId: undefined,
+      createdAt: Timestamp.now(),
     };
-
-    await addDoc(duesColW(), dueToCreate);
+    await addDoc(duesColWRITE(), due);
     created += 1;
   }
 
   return created;
-};
+}
 
-// Registrar pago inmediato (flujo simple que ya tenías)
-export const payDue = async (userId: string, dueId: string, accountId: string, amount: number): Promise<void> => {
-  await runTransaction(db, async (tx) => {
-    const dueRef = doc(db, "bill_dues", dueId).withConverter(dateConverter<BillDue>());
-    const accRef = doc(db, "accounts", accountId).withConverter(dateConverter<Account>());
-
-    const dueSnap = await tx.get(dueRef);
-    const accSnap = await tx.get(accRef);
-
-    if (!dueSnap.exists() || !accSnap.exists()) throw new Error("Recurso no encontrado");
-    const due = dueSnap.data();
-    const acc = accSnap.data();
-
-    if (due.userId !== userId || acc.userId !== userId) throw new Error("Acceso denegado");
-    if (acc.currency !== due.currency) throw new Error("Moneda distinta. Usa FX primero.");
-    if (amount <= 0) throw new Error("Monto inválido");
-    if (acc.balance < amount) throw new Error("Saldo insuficiente");
-
-    // Debitar cuenta
-    tx.update(accRef, {balance: acc.balance - amount});
-
-    // Transacción de gasto
-    const t: NewTxExpense = {
-      userId,
-      type: "expense",
-      accountId,
-      amount,
-      currency: acc.currency,
-      title: due.title,
-      createdAt: Timestamp.now(),
-    };
-    tx.set(doc(txColW()), dateConverter<NewTxExpense>().toFirestore(t));
-
-    // Actualizar due
-    const paid = due.amountPaid + amount;
-    const status: BillDue["status"] =
-      paid >= due.amountPlanned && due.amountPlanned > 0 ? "paid"
-        : paid > 0 ? "partial"
-          : "pending";
-
-    tx.update(dueRef, {amountPaid: paid, status, accountId});
-  });
-};
-
-// ========= Helpers de estado y “vencimientos próximos” (3 días) =========
-
-// Soporte robusto para dueDate: Timestamp | Date | string ISO
-type DueDateLike = Timestamp | Date | string;
-
-export const dueDateToMillis = (v: DueDateLike): number => {
-  if (v instanceof Timestamp) return v.toMillis();
-  if (v instanceof Date) return v.getTime();
-  if (typeof v === "string") {
-    const ms = Date.parse(v);
-    if (!Number.isNaN(ms)) return ms;
-  }
-  return NaN;
-};
-
-export const computeBillDueStatus = (
-  due: Pick<BillDue, "amountPlanned" | "amountPaid" | "dueDate">
-): BillStatus => {
-  const planned = due.amountPlanned;
-  const paid = due.amountPaid;
-
-  if (planned > 0 && paid >= planned) return "paid";
-
-  const nowMs = Date.now();
-  const dueMs = dueDateToMillis(due.dueDate as unknown as DueDateLike);
-
-  if (!Number.isFinite(dueMs)) return planned > 0 && paid > 0 ? "partial" : "pending";
-  if (dueMs < nowMs) return "overdue";
-  if (planned > 0 && paid > 0 && paid < planned) return "partial";
-  return "pending";
-};
-
-export const isDueSoon = (due: Pick<BillDue, "dueDate">, days = 3): boolean => {
-  console.log(due);
-  const nowMs = Date.now();
-  const edgeMs = nowMs + days * 24 * 60 * 60 * 1000;
-  const dueMs = dueDateToMillis(due.dueDate as unknown as DueDateLike);
-
-  if (!Number.isFinite(dueMs)) return false;
-  return dueMs >= nowMs && dueMs <= edgeMs;
-};
-
-// ==============================
-// === EDICIÓN DEL PLAN (Fase 2)
-// ==============================
-
-// 1) Monto planificado del mes
-export const setDuePlannedAmount = async (uid: string, dueId: string, amountPlanned: number): Promise<void> => {
-  if (!uid) throw new Error("uid requerido");
-  if (!dueId) throw new Error("dueId requerido");
-  if (!Number.isFinite(amountPlanned) || amountPlanned < 0) throw new Error("amountPlanned inválido");
-
-  const ref = doc(db, "bill_dues", dueId);
-
-  await runTransaction(db, async (tx) => {
-    const snap = await tx.get(ref);
-    if (!snap.exists()) throw new Error("Instancia no encontrada");
-
-    const curr = snap.data() as BillDue;
-    if (curr.userId !== uid) throw new Error("No autorizado");
-    const nextStatus = computeBillDueStatus({ amountPlanned, amountPaid: curr.amountPaid, dueDate: curr.dueDate });
-    tx.update(ref, { amountPlanned, status: nextStatus });
-  });
-};
-
-// 2) Cuenta por defecto del plan (para ese ítem)
-export const setDuePlanAccount = async (uid: string, dueId: string, planAccountId: string | undefined): Promise<void> => {
-  if (!uid) throw new Error("uid requerido");
-  if (!dueId) throw new Error("dueId requerido");
-
-  const ref = doc(db, "bill_dues", dueId);
-
-  await runTransaction(db, async (tx) => {
-    const snap = await tx.get(ref);
-    if (!snap.exists()) throw new Error("Instancia no encontrada");
-
-    const curr = snap.data() as BillDue;
-    if (curr.userId !== uid) throw new Error("No autorizado");
-
-    if (typeof planAccountId === "string" && planAccountId.length > 0) {
-      tx.update(ref, {planAccountId});
-    } else {
-      tx.update(ref, { planAccountId: "" });
-    }
-  });
-};
-
-// ======= NUEVO: crear ítem puntual (no proviene de plantilla) =======
-export const createOneOffDue = async (params: {
+/* ===========================================================
+ *  createOneOffDue: crear vencimiento puntual (firma del ZIP)
+ * =========================================================== */
+export async function createOneOffDue(params: {
   uid: string;
   title: string;
   currency: string;
   dueDate: Timestamp;
   amountPlanned: number;
   planAccountId?: string;
-}): Promise<string> => {
+}): Promise<string> {
   const { uid, title, currency, dueDate, amountPlanned, planAccountId } = params;
+
   if (!uid) throw new Error("uid requerido");
   if (!title.trim()) throw new Error("titulo requerido");
   if (!currency) throw new Error("currency requerido");
   if (!(amountPlanned >= 0)) throw new Error("amountPlanned inválido");
 
-  const docRef = await addDoc(duesColW(), {
-      userId: uid,
+  const payload: Omit<BillDue, "id"> = {
+    userId: uid,
     title: title.trim(),
     currency,
     amountPlanned,
@@ -261,11 +220,78 @@ export const createOneOffDue = async (params: {
     status: "pending",
     dueDate,
     ...(planAccountId ? { planAccountId } : {}),
-  });
-  return docRef.id;
-    };
+    createdAt: Timestamp.now(),
+  };
 
-// ======= NUEVO: borrar ítem del plan =======
-export const deleteDue = async (dueId: string): Promise<void> => {
-  await deleteDoc(doc(db, "bill_dues", dueId));
-};
+  const ref = await addDoc(duesColWRITE(), payload);
+  return ref.id;
+}
+
+export async function deleteDue(dueId: string): Promise<void> {
+  await deleteDoc(doc(duesColREAD(), dueId));
+}
+
+/* ===========================================================
+ *  payDue: pago transaccional con opción de pago parcial (por defecto permitido)
+ *  Firma compatible con el ZIP: payDue(uid, dueId, accountId, amount)
+ * =========================================================== */
+export async function payDue(
+  userId: string,
+  dueId: string,
+  accountId: string,
+  amount: number,
+): Promise<void> {
+  const allowPartial = true;
+
+  await runTransaction(db, async (tx) => {
+    if (!(amount > 0)) throw new Error("Monto inválido");
+
+    const dueRef = doc(duesColREAD(), dueId);
+    const accRef = doc(accountsColREAD(), accountId);
+
+    const [dueSnap, accSnap] = await Promise.all([tx.get(dueRef), tx.get(accRef)]);
+    if (!dueSnap.exists()) throw new Error("Vencimiento no encontrado");
+    if (!accSnap.exists()) throw new Error("Cuenta no encontrada");
+
+    const due = dueSnap.data();
+    const acc = accSnap.data();
+
+    if (due.userId !== userId || acc.userId !== userId) throw new Error("Acceso denegado");
+    if (acc.currency !== due.currency) throw new Error("Moneda distinta. Usa FX primero.");
+
+    const balance = acc.balance || 0;
+    let amountToPay = amount;
+
+    if (balance < amount) {
+      if (!allowPartial) throw new Error("Saldo insuficiente");
+      amountToPay = balance;
+      if (!(amountToPay > 0)) throw new Error("Saldo insuficiente");
+    }
+
+    // 1) Debitar cuenta
+    tx.update(accRef, { balance: balance - amountToPay });
+
+    // 2) Registrar transacción (expense)
+    const tPayload: Omit<Transaction, "id"> = {
+      userId,
+      type: "expense",
+      accountId,
+      amount: amountToPay,
+      currency: acc.currency,
+      createdAt: Timestamp.now(),
+    };
+    await addDoc(transactionsColWRITE(), tPayload);
+
+    // 3) Actualizar Due (acumulado + estado)
+    const paid = (due.amountPaid || 0) + amountToPay;
+    const planned = due.amountPlanned || 0;
+    const status: BillDue["status"] =
+      planned > 0 && paid >= planned ? "paid" : paid > 0 ? "partial" : "pending";
+
+    tx.update(dueRef, {
+      amountPaid: paid,
+      status,
+      accountId, // última cuenta usada
+    });
+  });
+}
