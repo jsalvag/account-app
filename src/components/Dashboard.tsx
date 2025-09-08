@@ -77,11 +77,22 @@ export default function Dashboard() {
     return () => unsub();
   }, [uid, month]);
 
-  /** Mapa de cuentas para descripciones en el modal */
-  const accMap = useMemo<Map<string, string>>(
-    () => new Map<string, string>(accounts.map(a => [a.id, `${a.name} [${a.currency}]`])),
+  /** Mapas auxiliares compactos para labels */
+  const instNameById = useMemo<Map<string, string>>(
+    () => new Map<string, string>(institutions.map(i => [i.id, i.name])),
+    [institutions]
+  );
+  const accById = useMemo(
+    () => new Map(accounts.map(a => [a.id, a])),
     [accounts]
   );
+  const labelAcc = (accId: string): string => {
+    const a = accById.get(accId);
+    if (!a) return accId;
+    const instName = instNameById.get(a.institutionId);
+    const instPart = instName ? `${instName} › ` : "";
+    return `${instPart}${a.name} [${a.currency}]`;
+  };
 
   return (
     <div className="grid gap-6">
@@ -100,7 +111,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Modal de institución */}
+      {/* Modal de institución — diseño compacto */}
       <Modal
         open={!!openInst}
         onClose={() => setOpenInst(null)}
@@ -108,54 +119,54 @@ export default function Dashboard() {
         size="lg"
       >
         {openInst && (
-          <div className="grid gap-4">
-            {/* Composición por moneda/ticker */}
-            <div className="grid sm:grid-cols-2 gap-3">
+          <div className="grid gap-3">
+            {/* Top: composición y cuentas (menos padding y márgenes) */}
+            <div className="grid md:grid-cols-2 gap-3">
               <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                <div className="text-xs opacity-70 mb-2">Por moneda</div>
-                <div className="grid gap-1">
+                <div className="text-xs opacity-70 mb-1">Por moneda</div>
+                <div className="grid gap-1 text-sm">
                   {Array.from(openInst.perCurrency.entries())
                     .sort(([a],[b]) => a.localeCompare(b))
                     .map(([cur, amount]) => (
-                      <div key={cur} className="flex items-center justify-between text-sm">
+                      <div key={cur} className="flex items-center justify-between">
                         <span className="opacity-70">{cur}</span>
                         <span className="tabular-nums">{money(amount)}</span>
                       </div>
                     ))}
                   {openInst.perCurrency.size === 0 && (
-                    <div className="text-sm opacity-60">Sin datos</div>
+                    <div className="opacity-60">Sin datos</div>
                   )}
                 </div>
               </div>
 
               <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                <div className="text-xs opacity-70 mb-2">Cripto (por ticker)</div>
-                <div className="grid gap-1">
+                <div className="text-xs opacity-70 mb-1">Cripto (por ticker)</div>
+                <div className="grid gap-1 text-sm">
                   {Array.from(openInst.perCrypto.entries())
                     .sort(([a],[b]) => a.localeCompare(b))
                     .map(([ticker, amount]) => (
-                      <div key={ticker} className="flex items-center justify-between text-sm">
+                      <div key={ticker} className="flex items-center justify-between">
                         <span className="opacity-70">{ticker}</span>
                         <span className="tabular-nums">{money(amount)}</span>
                       </div>
                     ))}
                   {openInst.perCrypto.size === 0 && (
-                    <div className="text-sm opacity-60">Sin cripto</div>
+                    <div className="opacity-60">Sin cripto</div>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Cuentas de la entidad */}
-            <div>
-              <h4 className="font-medium mb-2">Cuentas</h4>
-              <div className="grid gap-2">
+            {/* Cuentas (dos columnas, compacto) */}
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+              <h4 className="font-medium mb-2 text-sm">Cuentas</h4>
+              <div className="grid sm:grid-cols-2 gap-2 text-sm">
                 {accounts.filter(a => a.institutionId === openInst.instId)
                   .sort((a,b)=>a.name.localeCompare(b.name))
                   .map((a) => (
-                    <div key={a.id} className="flex items-center justify-between text-sm">
-                      <div className="opacity-80">{a.name} <span className="opacity-60">[{a.currency}]</span></div>
-                      <div className="tabular-nums">{money(a.balance)}</div>
+                    <div key={a.id} className="flex items-center justify-between">
+                      <div className="opacity-80 truncate">{a.name} <span className="opacity-60">[{a.currency}]</span></div>
+                      <div className="tabular-nums whitespace-nowrap">{money(a.balance)}</div>
                     </div>
                   ))}
                 {accounts.filter(a => a.institutionId === openInst.instId).length === 0 && (
@@ -164,16 +175,16 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Transacciones (últimas 10) de la entidad */}
-            <div>
-              <h4 className="font-medium mb-2">Transacciones</h4>
+            {/* Transacciones (últimas 10) — muestra institución origen/destino y reduce espacios */}
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+              <h4 className="font-medium mb-2 text-sm">Transacciones</h4>
               <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
+                <table className="min-w-full text-sm table-fixed">
                   <thead className="text-left opacity-70">
                   <tr>
-                    <th className="py-2 pr-4">Tipo / Descripción</th>
-                    <th className="py-2 pr-4 text-right">Monto</th>
-                    <th className="py-2 pl-4">Fecha</th>
+                    <th className="py-2 pr-3 w-2/3">Tipo / Descripción</th>
+                    <th className="py-2 pr-3 text-right w-1/6">Monto</th>
+                    <th className="py-2 pl-3 w-1/6">Fecha</th>
                   </tr>
                   </thead>
                   <tbody>
@@ -193,41 +204,68 @@ export default function Dashboard() {
                         let desc = "";
                         let amount = 0;
                         let currency = "";
-                        let isOut = false;
+                        let cls = ""; // color según entra/sale
 
                         switch (t.type) {
-                          case "transfer":
+                          case "transfer": {
                             kind = "Transferencia";
-                            desc = `${accMap.get(fromId) ?? fromId} → ${accMap.get(toId) ?? toId}`;
-                            amount = t.amount ?? 0; currency = t.currency ?? ""; isOut = true;
-                            break;
-                          case "fx":
-                            kind = "Cambio";
-                            desc = `${t.sellCurrency ?? ""}→${t.buyCurrency ?? ""} @${t.rate ?? ""}`;
-                            amount = t.buyAmount ?? 0; currency = t.buyCurrency ?? ""; isOut = false;
-                            break;
-                          case "income":
-                            kind = "Ingreso";
-                            desc = accMap.get(acctId) ?? acctId;
-                            amount = t.amount ?? 0; currency = t.currency ?? ""; isOut = false;
-                            break;
-                          default:
-                            desc = accMap.get(acctId) ?? acctId;
+                            const fromHere = ids.has(fromId);
+                            const toHere = ids.has(toId);
+                            desc = `${labelAcc(fromId)} → ${labelAcc(toId)}`;
                             amount = t.amount ?? 0; currency = t.currency ?? "";
+                            if (fromHere && !toHere) cls = "text-rose-600";
+                            else if (toHere && !fromHere) cls = "text-emerald-600";
+                            else cls = "";
+                            break;
+                          }
+                          case "fx": {
+                            kind = "Cambio";
+                            // Conversión dentro de una cuenta: lo mostramos neutral, con cuenta/institución
+                            const label = labelAcc(acctId);
+                            desc = `${label} · ${t.sellCurrency ?? ""}→${t.buyCurrency ?? ""} @${t.rate ?? ""}`;
+                            amount = t.buyAmount ?? 0; currency = t.buyCurrency ?? "";
+                            cls = "";
+                            break;
+                          }
+                          case "income": {
+                            kind = "Ingreso";
+                            desc = labelAcc(acctId);
+                            amount = t.amount ?? 0; currency = t.currency ?? "";
+                            cls = "text-emerald-600";
+                            break;
+                          }
+                          default: {
+                            // expense u otros
+                            kind = "Gasto";
+                            desc = labelAcc(acctId);
+                            amount = t.amount ?? 0; currency = t.currency ?? "";
+                            cls = "text-rose-600";
+                            break;
+                          }
                         }
 
                         return (
                           <tr key={t.id} className="border-t border-slate-200 dark:border-slate-800">
-                            <td className="py-2 pr-4">
-                              <span className="opacity-60">{kind}</span> · {desc}
+                            <td className="py-1.5 pr-3">
+                              <span className="opacity-60">{kind}</span> · <span className="truncate inline-block max-w-full align-bottom">{desc}</span>
                             </td>
-                            <td className={`py-2 pr-4 text-right tabular-nums ${isOut ? "text-rose-600" : "text-emerald-600"}`}>
+                            <td className={`py-1.5 pr-3 text-right tabular-nums whitespace-nowrap ${cls}`}>
                               {money(amount)} {currency}
                             </td>
-                            <td className="py-2 pl-4">{date ? fmtDMYfromTs(date) : "—"}</td>
+                            <td className="py-1.5 pl-3 whitespace-nowrap">{date ? fmtDMYfromTs(date) : "—"}</td>
                           </tr>
                         );
                       });
+                  })()}
+                  {(() => {
+                    const ids = new Set<string>(accounts.filter(a=>a.institutionId===openInst.instId).map(a=>a.id));
+                    const has = transactions.some(t => ids.has(t.accountId ?? "") || ids.has(t.fromAccountId ?? "") || ids.has(t.toAccountId ?? ""));
+                    if (!has) {
+                      return (
+                        <tr><td colSpan={3} className="py-3 text-center opacity-60">Sin transacciones</td></tr>
+                      );
+                    }
+                    return null;
                   })()}
                   </tbody>
                 </table>

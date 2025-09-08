@@ -15,18 +15,17 @@ export default function InstitutionCard({ agg, onOpen }: InstitutionCardProps) {
     <button
       onClick={() => onOpen(agg)}
       className={`group rounded-xl border ${borderClass} bg-white dark:bg-slate-900 shadow-sm p-4 text-left focus:outline-none hover:bg-slate-50/60 dark:hover:bg-slate-800/50 transition`}
-      style={{height: 160}}
+      style={{height: 100}}
       title={agg.instName}
       aria-label={`Abrir ${agg.instName}`}
     >
       <div className="flex items-start gap-3">
-        {/* sin dona */}
         <div className="flex-1 min-w-0">
           <div className="font-semibold truncate" style={{maxWidth: 260}}>{agg.instName}</div>
           <div className="text-xs opacity-70">{KIND_LABELS[agg.instKind]}</div>
 
           {/* montos por moneda (suma dentro de la misma moneda) */}
-          <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1">
+          <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1">
             {Array.from(agg.perCurrency.entries())
               .sort(([a],[b]) => a.localeCompare(b))
               .map(([cur, amount]) => (
